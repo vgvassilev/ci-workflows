@@ -332,3 +332,53 @@ class BootstrapTests(unittest.TestCase):
                     "dep", "22", "ubuntu-24.04", "x86_64",
                     recipe_root=str(recipes), lib_root=str(d / "lib"))
 
+
+
+class PatchGlobTests(unittest.TestCase):
+    """A recipe whose patches are per version is keyed on its own only.
+
+    Hashing every patch moved every cell's key whenever one was added for a
+    single major: #155 added a clang 23 patch and every llvm-wasm cell, 22
+    included, lost its cache until it was rebuilt.
+    """
+
+    YAML = ("recipe: r\n"
+            "patches:\n"
+            "  glob: 'p{major}-*.patch'\n")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        _make_recipe(Path(self.dir), "r", yaml=self.YAML,
+                     patches={"p22-1.patch": "a", "p23-1.patch": "b"})
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def _key(self, version):
+        return compute_key.compute_key(
+            "r", version, "ubuntu-24.04", "x86_64", self.dir)
+
+    def _patches(self):
+        return Path(self.dir) / "r" / "patches"
+
+    def test_patch_for_another_major_leaves_the_key(self):
+        before = self._key("22-emsdk6.0.8")
+        (self._patches() / "p23-2.patch").write_text("c")
+        (self._patches() / "p23-1.patch").write_text("changed")
+        self.assertEqual(before, self._key("22-emsdk6.0.8"))
+
+    def test_patch_for_this_major_moves_the_key(self):
+        before = self._key("22")
+        (self._patches() / "p22-2.patch").write_text("c")
+        self.assertNotEqual(before, self._key("22"))
+
+    def test_selection_is_what_the_build_applies(self):
+        import recipe_patches
+        self.assertEqual(
+            [p.name for p in recipe_patches.selected_patches(
+                Path(self.dir) / "r", "22-emsdk6.0.8")],
+            ["p22-1.patch"])
+
+    def test_version_without_a_major_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self._key("main")
